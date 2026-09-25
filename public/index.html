@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Meera Voice Drafter</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #faf9f7;
+    --panel: #ffffff;
+    --text: #1c1b19;
+    --muted: #6b6864;
+    --border: #e3e0da;
+    --accent: #2f6b52;
+    --accent-text: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161513;
+      --panel: #201f1c;
+      --text: #f2f0ec;
+      --muted: #9a968f;
+      --border: #35332e;
+      --accent: #5fa885;
+      --accent-text: #0d1210;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 48px 20px;
+  }
+  main {
+    width: 100%;
+    max-width: 640px;
+  }
+  h1 {
+    font-size: 1.4rem;
+    margin: 0 0 4px;
+  }
+  p.sub {
+    color: var(--muted);
+    margin: 0 0 28px;
+    font-size: 0.92rem;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 120px;
+    resize: vertical;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 0.95rem;
+    font-family: inherit;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 14px;
+  }
+  select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 0.9rem;
+  }
+  button {
+    background: var(--accent);
+    color: var(--accent-text);
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  #output-wrap {
+    margin-top: 22px;
+    display: none;
+  }
+  #output {
+    white-space: pre-wrap;
+    line-height: 1.55;
+    font-size: 0.95rem;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+  #article {
+    margin-top: 14px;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  #article a {
+    color: var(--accent);
+  }
+  #error {
+    margin-top: 16px;
+    color: #c0392b;
+    font-size: 0.9rem;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Meera Voice Drafter</h1>
+  <p class="sub">Drop a rough note or topic. Get a draft in Meera Pillai's voice — sourced number, mechanism, self-interest disclaimer, verify-don't-pitch ending.</p>
+
+  <div class="panel">
+    <label for="note">Note / topic</label>
+    <textarea id="note" placeholder="e.g. most vitamin c serums oxidise fast once opened — how do you tell a good formulation from a bad one?"></textarea>
+
+    <div class="row">
+      <select id="channel">
+        <option value="linkedin">LinkedIn</option>
+        <option value="newsletter">Newsletter</option>
+      </select>
+      <button id="submit">Draft</button>
+    </div>
+
+    <div id="error"></div>
+
+    <div id="output-wrap">
+      <div id="output"></div>
+      <div id="article"></div>
+    </div>
+  </div>
+</main>
+
+<script>
+  const noteEl = document.getElementById('note');
+  const channelEl = document.getElementById('channel');
+  const submitEl = document.getElementById('submit');
+  const outputWrap = document.getElementById('output-wrap');
+  const outputEl = document.getElementById('output');
+  const articleEl = document.getElementById('article');
+  const errorEl = document.getElementById('error');
+
+  async function draft() {
+    const note = noteEl.value.trim();
+    if (!note) return;
+
+    submitEl.disabled = true;
+    submitEl.textContent = 'Drafting…';
+    errorEl.style.display = 'none';
+    outputWrap.style.display = 'none';
+
+    try {
+      const res = await fetch('/api/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note, channel: channelEl.value }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Something went wrong');
+      }
+
+      outputEl.textContent = data.draft;
+      if (data.related_article) {
+        articleEl.innerHTML = 'Related: <a href="' + data.related_article.link +
+          '" target="_blank" rel="noopener">' + data.related_article.title + '</a>';
+      } else {
+        articleEl.textContent = '';
+      }
+      outputWrap.style.display = 'block';
+    } catch (err) {
+      errorEl.textContent = err.message;
+      errorEl.style.display = 'block';
+    } finally {
+      submitEl.disabled = false;
+      submitEl.textContent = 'Draft';
+    }
+  }
+
+  submitEl.addEventListener('click', draft);
+  noteEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) draft();
+  });
+</script>
+</body>
+</html>

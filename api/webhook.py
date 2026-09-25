@@ -2,7 +2,7 @@
 Vercel serverless entry point: Telegram calls this URL directly (webhook mode)
 for every incoming message, instead of the bot polling Telegram for updates.
 
-Same drafting logic as bot.py (voice_rubric.py + Gemini), different transport.
+Drafting logic lives in engine.py, shared with api/draft.py and bot.py.
 """
 
 import os
@@ -10,19 +10,13 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import google.generativeai as genai
 import requests
 from flask import Flask, request
 
-from voice_rubric import SYSTEM_PROMPT
+from engine import generate_draft
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
-
-genai.configure(api_key=GEMINI_API_KEY)
-gemini = genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
 
 app = Flask(__name__)
 
@@ -65,13 +59,12 @@ def webhook():
         return "ok"
 
     try:
-        response = gemini.generate_content(f"Channel: {channel}\n\nNotes:\n{note}")
-        draft_text = response.text
+        result = generate_draft(channel, note)
     except Exception as exc:
         send_message(chat_id, f"Draft generation failed: {exc}")
         return "ok"
 
-    send_message(chat_id, draft_text)
+    send_message(chat_id, result["draft"])
     return "ok"
 
 

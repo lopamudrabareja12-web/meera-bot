@@ -13,24 +13,18 @@ Commands:
 import logging
 import os
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from voice_rubric import SYSTEM_PROMPT
-
 load_dotenv()
 
+from engine import GEMINI_MODEL, generate_draft  # noqa: E402  (needs load_dotenv() first)
+
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
-
-genai.configure(api_key=GEMINI_API_KEY)
-gemini = genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
 
 # Per-chat pending channel selection (in-memory; resets on restart)
 pending_channel: dict[int, str] = {}
@@ -62,8 +56,7 @@ async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        response = gemini.generate_content(f"Channel: {channel}\n\nNotes:\n{note}")
-        draft_text = response.text
+        result = generate_draft(channel, note)
     except Exception:
         logger.exception("Gemini API call failed")
         await update.message.reply_text(
@@ -71,7 +64,7 @@ async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text(draft_text)
+    await update.message.reply_text(result["draft"])
 
 
 def main() -> None:
