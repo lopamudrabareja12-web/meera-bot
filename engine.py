@@ -18,6 +18,7 @@ instructions live only in the per-request prompt built here.
 from __future__ import annotations
 
 import os
+import re
 
 import google.generativeai as genai
 
@@ -26,12 +27,54 @@ from voice_rubric import SYSTEM_PROMPT
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+SCORE_THRESHOLD = 6
 
 genai.configure(api_key=GEMINI_API_KEY)
 _model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
 _terms_model = genai.GenerativeModel(GEMINI_MODEL)
+_scorer_model = genai.GenerativeModel(GEMINI_MODEL)
 
 NEWS_USED_MARKER = "NEWS_USED:"
+
+_SCORE_RE = re.compile(r"SCORE:\s*(\d+)", re.IGNORECASE)
+_REASON_RE = re.compile(r"REASON:\s*(.+)", re.IGNORECASE)
+
+
+def score_note(note: str) -> dict:
+    """Score a raw note 0-10 for whether it's worth drafting into a post.
+
+    Deliberately strict: a task reminder, a logistics note, or an abandoned
+    half-sentence should score low even though it's real text — there has to
+    be an actual claim, mechanism, story, or point of view to draft from.
+    """
+    prompt = (
+        "You triage rough notes before they're turned into LinkedIn posts or newsletters "
+        "for a skincare brand founder. Score the note below from 0 to 10 for how ready it "
+        "is to draft into an actual post.\n\n"
+        "Score high (7-10) ONLY if the note contains a specific claim, mechanism, story, "
+        "or clear point of view — something with real content to build a post around.\n"
+        "Score low (0-3) if the note is a task reminder, a to-do, a logistics note "
+        "(ordering supplies, scheduling, admin), a half-formed or abandoned thought, or "
+        "just doesn't have enough substance to say anything to a reader.\n"
+        "Score in between (4-6) if there's a kernel of a usable idea but it's vague, "
+        "underdeveloped, or missing the specifics needed to actually write from.\n\n"
+        "Be strict — most rough notes people jot down are NOT ready to draft. Do not be "
+        "generous just because a note is on-topic for skincare.\n\n"
+        "Reply on ONE line, in exactly this format, nothing else:\n"
+        "SCORE: <integer 0-10> | REASON: <one short sentence>\n\n"
+        f"Note: {note}"
+    )
+
+    try:
+        reply = _scorer_model.generate_content(prompt).text.strip()
+        score_match = _SCORE_RE.search(reply)
+        reason_match = _REASON_RE.search(reply)
+        score = int(score_match.group(1)) if score_match else 0
+        reason = reason_match.group(1).strip() if reason_match else reply
+        return {"score": max(0, min(10, score)), "reason": reason}
+    except Exception as exc:
+        print(f"[score] scoring failed: {exc!r}")
+        return {"score": 0, "reason": "Scoring failed, so this was rejected rather than drafted blind."}
 
 
 def _extract_search_terms(note: str) -> list[str]:

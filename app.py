@@ -16,7 +16,7 @@ import os
 import requests
 from flask import Flask, jsonify, request, send_from_directory
 
-from engine import generate_draft
+from engine import SCORE_THRESHOLD, generate_draft, score_note
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
@@ -103,6 +103,14 @@ def webhook_endpoint():
 
     if not note:
         send_telegram_message(chat_id, "Send the note in the same message, e.g. '/newsletter <your note>'.")
+        return "ok"
+
+    scoring = score_note(note)
+    if scoring["score"] < SCORE_THRESHOLD:
+        send_telegram_message(
+            chat_id,
+            f"No draft made (score: {scoring['score']}/10). {scoring['reason']}",
+        )
         return "ok"
 
     try:

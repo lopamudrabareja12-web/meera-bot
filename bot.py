@@ -19,7 +19,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 load_dotenv()
 
-from engine import GEMINI_MODEL, generate_draft  # noqa: E402  (needs load_dotenv() first)
+from engine import GEMINI_MODEL, SCORE_THRESHOLD, generate_draft, score_note  # noqa: E402
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
@@ -54,6 +54,11 @@ async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     channel = pending_channel.get(chat_id, "linkedin")
 
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    scoring = score_note(note)
+    if scoring["score"] < SCORE_THRESHOLD:
+        await update.message.reply_text(f"No draft made (score: {scoring['score']}/10). {scoring['reason']}")
+        return
 
     try:
         result = generate_draft(channel, note)
