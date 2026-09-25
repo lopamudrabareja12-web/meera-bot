@@ -119,5 +119,5 @@ def webhook_endpoint():
         send_telegram_message(chat_id, f"Draft generation failed: {exc}")
         return "ok"
 
-    send_telegram_message(chat_id, result["draft"])
+    send_telegram_message(chat_id, f"Score: {scoring['score']}/10\n\n{result['draft']}")
     return "ok"

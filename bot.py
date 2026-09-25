@@ -69,7 +69,7 @@ async def draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    await update.message.reply_text(result["draft"])
+    await update.message.reply_text(f"Score: {scoring['score']}/10\n\n{result['draft']}")
 
 
 def main() -> None:

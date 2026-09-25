@@ -5,11 +5,12 @@ the draft with a real, current Google News link — the "news angle" feature.
 
 Flow: note -> Gemini extracts 3-5 search terms -> Google News RSS (top
 result) -> that headline/source/date/summary is handed to the SAME
-drafting call alongside the note, with instructions to use it only if it's
-genuinely relevant. The drafting call ends its response with a
-NEWS_USED: yes/no marker (stripped before sending) so we know whether to
-append the source/verification line — using our own fetched link, not
-whatever the model might reproduce, so it can't drift or get mangled.
+drafting call alongside the note, with instructions to use it if it's
+genuinely relevant to the writing. Whenever RSS found *anything* for the
+note — even a loose/tangential match — a "Related:" line with the link is
+appended at the end, using our own fetched link (not whatever the model
+might reproduce, so it can't drift or get mangled). The user wants to
+always see what was found rather than have a weak match silently vanish.
 
 Does not touch voice_rubric.py (Meera's voice system prompt) — the news
 instructions live only in the per-request prompt built here.
@@ -33,8 +34,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 _model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
 _terms_model = genai.GenerativeModel(GEMINI_MODEL)
 _scorer_model = genai.GenerativeModel(GEMINI_MODEL)
-
-NEWS_USED_MARKER = "NEWS_USED:"
 
 _SCORE_RE = re.compile(r"SCORE:\s*(\d+)", re.IGNORECASE)
 _REASON_RE = re.compile(r"REASON:\s*(.+)", re.IGNORECASE)
@@ -117,24 +116,17 @@ def generate_draft(channel: str, note: str) -> dict:
             f"Date: {article.get('date') or 'unknown'}\n"
             f"Summary: {article.get('summary') or 'n/a'}\n\n"
             "If this news item is genuinely relevant, use it to make the post timely. "
-            "If it doesn't fit naturally, ignore it.\n\n"
-            "After writing the post, add one final line by itself, exactly "
-            f'"{NEWS_USED_MARKER} yes" if you actually referenced this news item in the '
-            f'post, or exactly "{NEWS_USED_MARKER} no" if you did not use it. This marker '
-            "line is removed automatically before publishing — it is not part of the post."
+            "If it doesn't fit naturally, don't force it into the writing — a link to it "
+            "will be appended separately either way, so you don't need to reference it "
+            "yourself for it to be visible."
         )
 
     response = _model.generate_content(prompt)
     draft_text = response.text.rstrip()
 
-    used_news = False
+    # Always show what news search found, even a loose/tangential match, rather than
+    # hiding it whenever the drafting model judged it not worth weaving into the text.
     if article:
-        lines = draft_text.splitlines()
-        if lines and lines[-1].strip().upper().startswith(NEWS_USED_MARKER):
-            used_news = lines[-1].strip().lower().endswith("yes")
-            draft_text = "\n".join(lines[:-1]).rstrip()
+        draft_text += f"\n\nRelated: {article['title']} — {article['link']}"
 
-    if used_news:
-        draft_text += f"\n\nSource: {article['title']} — {article['link']}"
-
-    return {"draft": draft_text, "related_article": article if used_news else None}
+    return {"draft": draft_text, "related_article": article}
