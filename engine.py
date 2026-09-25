@@ -2,11 +2,17 @@
 Shared drafting engine used by the Telegram webhook, the web UI, and the
 local polling bot: builds the prompt, calls Gemini, and (best-effort) grounds
 the draft with a real, current Google News link.
+
+The draft and the news lookup run in parallel (not one after another) —
+sequential took ~20s in practice (RSS fetch + a Gemini "picker" call + the
+main Gemini call), which risks exceeding the serverless function timeout on
+Vercel before a response is ever sent back.
 """
 
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import google.generativeai as genai
 
@@ -21,8 +27,10 @@ _model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
 _picker_model = genai.GenerativeModel(GEMINI_MODEL)
 
 
-def _pick_relevant_article(note: str, candidates: list[dict]) -> dict | None:
+def _pick_relevant_article(note: str) -> dict | None:
+    candidates = find_candidate_articles(note)
     if not candidates:
+        print(f"[news] no RSS candidates for note: {note[:80]!r}")
         return None
 
     listing = "\n".join(
@@ -44,29 +52,29 @@ def _pick_relevant_article(note: str, candidates: list[dict]) -> dict | None:
     try:
         reply = _picker_model.generate_content(prompt).text.strip().lower()
         if reply == "none" or not reply.isdigit():
+            print(f"[news] picker rejected all {len(candidates)} candidates for: {note[:80]!r}")
             return None
         index = int(reply)
-        return candidates[index] if 0 <= index < len(candidates) else None
-    except Exception:
+        if 0 <= index < len(candidates):
+            return candidates[index]
+        print(f"[news] picker returned out-of-range index {index!r}")
+        return None
+    except Exception as exc:
+        print(f"[news] picker failed: {exc!r}")
         return None
 
 
-def generate_draft(channel: str, note: str) -> dict:
-    candidates = find_candidate_articles(note)
-    article = _pick_relevant_article(note, candidates)
-
+def _write_draft(channel: str, note: str) -> str:
     prompt = f"Channel: {channel}\n\nNotes:\n{note}"
-    if article:
-        prompt += (
-            "\n\nA recent, related news item. A link to it will be appended to the post "
-            "automatically after you write it, so do not add your own link or repeat the URL "
-            "in the body — but you may reference it by name or publication in a sentence, "
-            "accurately, without misrepresenting what it says:\n"
-            f"\"{article['title']}\" ({article.get('source') or 'source unknown'})"
-        )
+    return _model.generate_content(prompt).text.rstrip()
 
-    response = _model.generate_content(prompt)
-    draft_text = response.text.rstrip()
+
+def generate_draft(channel: str, note: str) -> dict:
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        draft_future = pool.submit(_write_draft, channel, note)
+        article_future = pool.submit(_pick_relevant_article, note)
+        draft_text = draft_future.result()
+        article = article_future.result()
 
     if article:
         draft_text += f"\n\nSource: {article['title']} — {article['link']}"
