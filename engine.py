@@ -34,7 +34,7 @@ _terms_model = genai.GenerativeModel(GEMINI_MODEL)
 NEWS_USED_MARKER = "NEWS_USED:"
 
 
-def _extract_search_terms(note: str) -> str:
+def _extract_search_terms(note: str) -> list[str]:
     prompt = (
         "Extract 3 to 5 short search terms/phrases from the note below that would find "
         "relevant, current news coverage on the same topic. Reply with ONLY the terms, "
@@ -43,15 +43,22 @@ def _extract_search_terms(note: str) -> str:
     )
     try:
         reply = _terms_model.generate_content(prompt).text.strip()
-        return reply.replace(",", " ")
+        terms = [t.strip() for t in reply.split(",") if t.strip()]
+        return terms or [note[:80]]
     except Exception as exc:
         print(f"[news] search-term extraction failed: {exc!r}")
-        return note[:80]
+        return [note[:80]]
 
 
 def _find_news_angle(note: str) -> dict | None:
-    terms = _extract_search_terms(note)
-    return fetch_top_article(terms)
+    # Try each extracted term on its own — combining all of them into one query
+    # over-dilutes the search and reliably returns nothing. Capped at 3 attempts
+    # to bound worst-case latency (each RSS call has its own timeout).
+    for term in _extract_search_terms(note)[:3]:
+        article = fetch_top_article(term)
+        if article:
+            return article
+    return None
 
 
 def generate_draft(channel: str, note: str) -> dict:
