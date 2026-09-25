@@ -24,8 +24,25 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 app = Flask(__name__, static_folder="public", static_url_path="")
 
 
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
 def send_telegram_message(chat_id, text):
-    requests.post(f"{TELEGRAM_API}/sendMessage", json={"chat_id": chat_id, "text": text}, timeout=10)
+    # Telegram rejects any message over 4096 chars outright; split rather than lose it.
+    chunks = [text[i:i + TELEGRAM_MESSAGE_LIMIT] for i in range(0, len(text), TELEGRAM_MESSAGE_LIMIT)] or [""]
+
+    for chunk in chunks:
+        try:
+            resp = requests.post(
+                f"{TELEGRAM_API}/sendMessage",
+                json={"chat_id": chat_id, "text": chunk},
+                timeout=15,
+            )
+            body = resp.json()
+            if not body.get("ok"):
+                print(f"[telegram] sendMessage rejected: {body}")
+        except Exception as exc:
+            print(f"[telegram] sendMessage failed: {exc!r}")
 
 
 @app.route("/")
