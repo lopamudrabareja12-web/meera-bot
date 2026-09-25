@@ -1,22 +1,27 @@
 """
 Shared drafting engine used by the Telegram webhook, the web UI, and the
 local polling bot: builds the prompt, calls Gemini, and (best-effort) grounds
-the draft with a real, current Google News link.
+the draft with a real, current Google News link — the "news angle" feature.
 
-The draft and the news lookup run in parallel (not one after another) —
-sequential took ~20s in practice (RSS fetch + a Gemini "picker" call + the
-main Gemini call), which risks exceeding the serverless function timeout on
-Vercel before a response is ever sent back.
+Flow: note -> Gemini extracts 3-5 search terms -> Google News RSS (top
+result) -> that headline/source/date/summary is handed to the SAME
+drafting call alongside the note, with instructions to use it only if it's
+genuinely relevant. The drafting call ends its response with a
+NEWS_USED: yes/no marker (stripped before sending) so we know whether to
+append the source/verification line — using our own fetched link, not
+whatever the model might reproduce, so it can't drift or get mangled.
+
+Does not touch voice_rubric.py (Meera's voice system prompt) — the news
+instructions live only in the per-request prompt built here.
 """
 
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
 
 import google.generativeai as genai
 
-from news import find_candidate_articles
+from news import fetch_top_article
 from voice_rubric import SYSTEM_PROMPT
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
@@ -24,59 +29,62 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 genai.configure(api_key=GEMINI_API_KEY)
 _model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=SYSTEM_PROMPT)
-_picker_model = genai.GenerativeModel(GEMINI_MODEL)
+_terms_model = genai.GenerativeModel(GEMINI_MODEL)
+
+NEWS_USED_MARKER = "NEWS_USED:"
 
 
-def _pick_relevant_article(note: str) -> dict | None:
-    candidates = find_candidate_articles(note)
-    if not candidates:
-        print(f"[news] no RSS candidates for note: {note[:80]!r}")
-        return None
-
-    listing = "\n".join(
-        f"{i}. \"{c['title']}\" ({c.get('source') or 'unknown source'})"
-        for i, c in enumerate(candidates)
-    )
+def _extract_search_terms(note: str) -> str:
     prompt = (
-        "A writer is drafting a skincare industry post about the note below. Here is a list "
-        "of recent news headlines from an automated search. Reply with ONLY the number of the "
-        "single headline whose SUBJECT MATTER is closely related to the note's topic and would "
-        "add credible, relevant context if cited — it does not need to match the note's exact "
-        "angle or claim, just be substantively about the same ingredient/topic/regulatory area. "
-        "Reject generic buying guides, 'best products' roundups, 'we tested N products' listicles, "
-        "and anything only tangentially connected by a shared keyword. If nothing qualifies, "
-        "reply with exactly: none\n\n"
-        f"Note: {note}\n\nHeadlines:\n{listing}\n\nAnswer:"
+        "Extract 3 to 5 short search terms/phrases from the note below that would find "
+        "relevant, current news coverage on the same topic. Reply with ONLY the terms, "
+        "comma-separated, nothing else.\n\n"
+        f"Note: {note}"
     )
-
     try:
-        reply = _picker_model.generate_content(prompt).text.strip().lower()
-        if reply == "none" or not reply.isdigit():
-            print(f"[news] picker rejected all {len(candidates)} candidates for: {note[:80]!r}")
-            return None
-        index = int(reply)
-        if 0 <= index < len(candidates):
-            return candidates[index]
-        print(f"[news] picker returned out-of-range index {index!r}")
-        return None
+        reply = _terms_model.generate_content(prompt).text.strip()
+        return reply.replace(",", " ")
     except Exception as exc:
-        print(f"[news] picker failed: {exc!r}")
-        return None
+        print(f"[news] search-term extraction failed: {exc!r}")
+        return note[:80]
 
 
-def _write_draft(channel: str, note: str) -> str:
-    prompt = f"Channel: {channel}\n\nNotes:\n{note}"
-    return _model.generate_content(prompt).text.rstrip()
+def _find_news_angle(note: str) -> dict | None:
+    terms = _extract_search_terms(note)
+    return fetch_top_article(terms)
 
 
 def generate_draft(channel: str, note: str) -> dict:
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        draft_future = pool.submit(_write_draft, channel, note)
-        article_future = pool.submit(_pick_relevant_article, note)
-        draft_text = draft_future.result()
-        article = article_future.result()
+    article = _find_news_angle(note)
+
+    prompt = f"Channel: {channel}\n\nNotes:\n{note}"
 
     if article:
+        prompt += (
+            "\n\nHere is a recent news item found for this topic:\n"
+            f"Headline: {article['title']}\n"
+            f"Source: {article.get('source') or 'unknown'}\n"
+            f"Date: {article.get('date') or 'unknown'}\n"
+            f"Summary: {article.get('summary') or 'n/a'}\n\n"
+            "If this news item is genuinely relevant, use it to make the post timely. "
+            "If it doesn't fit naturally, ignore it.\n\n"
+            "After writing the post, add one final line by itself, exactly "
+            f'"{NEWS_USED_MARKER} yes" if you actually referenced this news item in the '
+            f'post, or exactly "{NEWS_USED_MARKER} no" if you did not use it. This marker '
+            "line is removed automatically before publishing — it is not part of the post."
+        )
+
+    response = _model.generate_content(prompt)
+    draft_text = response.text.rstrip()
+
+    used_news = False
+    if article:
+        lines = draft_text.splitlines()
+        if lines and lines[-1].strip().upper().startswith(NEWS_USED_MARKER):
+            used_news = lines[-1].strip().lower().endswith("yes")
+            draft_text = "\n".join(lines[:-1]).rstrip()
+
+    if used_news:
         draft_text += f"\n\nSource: {article['title']} — {article['link']}"
 
-    return {"draft": draft_text, "related_article": article}
+    return {"draft": draft_text, "related_article": article if used_news else None}
